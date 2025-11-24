@@ -168,7 +168,11 @@ if isempty(prior_matrix)
     Param.cmat = 0;
 else
     Param.hprior = 'yes';
-    Param.cmat = prior_matrix;
+    Param.cmat = 0;  % Set to 0 so flearnstruct loads LS from file
+    Param.savepath.hprior = [out_dir, '/Hprior.mat'];
+    % Save the prior matrix for flearnstruct to load
+    Hprior.skeleton = prior_matrix;
+    save(Param.savepath.hprior, 'Hprior');
     fprintf('Prior matrix applied: constraining %d edges out of %d total\n', ...
             sum(prior_matrix(:) == 0), nGenes^2);
 end
@@ -201,6 +205,8 @@ Param.savepath.network_viz = [Param.out_dir, 'network_visualization.png'];
 % Save parameters
 save(Param.savepath.param, 'Param');
 
+fprintf('param.savepath.ls: %s\n', Param.savepath.ls);
+fprintf('force_recompute: %d\n', force_recompute);
 %% Calculate Local Scores
 if ~force_recompute && exist(Param.savepath.ls, 'file')
     fprintf('Loading existing local scores from: %s\n', Param.savepath.ls);
@@ -214,7 +220,7 @@ else
             fprintf('Applying prior matrix constraints to local score calculation...\n');
             LS = CcalcLS(data_matrix, 'pa_limit', Param.pa_limit, 'hprior', prior_matrix);
         end
-        save(Param.savepath.ls, 'LS');
+        save(Param.savepath.ls, 'LS', '-v7.3');
         fprintf('Local scores calculated and saved.\n');
     catch ME
         error('Error calculating local scores: %s', ME.message);
@@ -227,6 +233,24 @@ if ~force_recompute && exist(Param.savepath.mcmc, 'file')
     load(Param.savepath.mcmc, 'Mcmc');
 else
     fprintf('Learning network structure (this may take a while)...\n');
+    
+    % Memory optimization: check available memory
+    try
+        if ispc
+            [~, sys] = memory;
+            avail_mem_gb = sys.PhysicalMemory.Available / 1e9;
+            fprintf('Available memory: %.2f GB\n', avail_mem_gb);
+            if avail_mem_gb < 2
+                warning('Low memory detected (%.2f GB). Consider reducing nodes or runtime.', avail_mem_gb);
+            end
+        end
+    catch
+        % Memory check not available on this system
+    end
+    
+    % Clear any large temporary variables before learning
+    clear data_matrix;
+    
     rng(1234); % Set random seed for reproducibility
 
     try
@@ -234,9 +258,22 @@ else
         Mcmc = flearnstruct(Param, 1);
         elapsed_time = toc;
         fprintf('Network learning completed in %.1f minutes!\n', elapsed_time/60);
-        save(Param.savepath.mcmc, 'Mcmc');
+        
+        % Save immediately to free memory
+        save(Param.savepath.mcmc, 'Mcmc', '-v7.3');
+        fprintf('MCMC results saved successfully.\n');
     catch ME
-        error('Error during network learning: %s', ME.message);
+        % Enhanced error reporting for memory issues
+        if contains(ME.message, 'memory') || contains(ME.message, 'Out of memory')
+            error(['Out of memory during network learning. Suggestions:\n' ...
+                   '1. Reduce number of nodes/features\n' ...
+                   '2. Reduce runtime_minutes or num_samples\n' ...
+                   '3. Use a machine with more RAM\n' ...
+                   '4. Reduce max_parents parameter\n' ...
+                   'Original error: %s'], ME.message);
+        else
+            error('Error during network learning: %s', ME.message);
+        end
     end
 end
 
